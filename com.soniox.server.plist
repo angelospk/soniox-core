@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Run soniox-core as a local service at login.
+     Build first:  cd ~/projects/soniox-core && go build -o bin/soniox ./cmd/soniox
+     Install:
+       cp com.soniox.server.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.soniox.server.plist
+     PATH includes Homebrew so ffmpeg/ffprobe are found.
+     Keys: GEMINI from ~/projects/soniox-dictate/.env; SONIOX_API_KEY (or
+     SONIOX_KEY_COMMAND) from the env — no secrets in this file. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.soniox.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/harold/projects/soniox-core/bin/soniox</string>
+        <string>serve</string>
+        <string>--addr</string>
+        <string>:8722</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/soniox-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/soniox-server.log</string>
+</dict>
+</plist>

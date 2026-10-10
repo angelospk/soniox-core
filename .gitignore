@@ -1,0 +1,7 @@
+/soniox
+/bin/
+*.out
+.env
+.DS_Store
+/evalcleanup
+node_modules/
