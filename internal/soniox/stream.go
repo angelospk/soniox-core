@@ -20,6 +20,11 @@ type Options struct {
 	EndpointDetection bool // false for continuous dictation / whole files
 	Diarization       bool
 	LowConfThreshold  float64 // words below this min-confidence are flagged (0 → default)
+	// Finalize, when set, asks Soniox to finalize pending tokens NOW (each receive =
+	// one manual finalization). The client uses it when its VAD sees the user stop
+	// talking, so the final arrives in ~100ms instead of waiting for Soniox's own
+	// pause detection. Audio after it simply forms the next utterance.
+	Finalize <-chan struct{}
 }
 
 // defaultLowConf is used when Options.LowConfThreshold is unset. Conservative so the
@@ -147,27 +152,10 @@ func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler
 		return false, err
 	}
 
-	// sender: pump audio until the channel closes (input done) or the session
-	// ends (sessionCtx cancelled) — without closing the shared audio channel.
-	go func() {
-		for {
-			select {
-			case chunk, ok := <-audio:
-				if !ok {
-					inputClosed.Store(true)
-					client.Stop()
-					return
-				}
-				if len(chunk) > 0 {
-					if err := client.SendAudio(chunk); err != nil {
-						return
-					}
-				}
-			case <-sessionCtx.Done():
-				return
-			}
-		}
-	}()
+	// sender: pump audio (and finalize requests) until the audio channel closes
+	// (input done) or the session ends — without closing the shared audio channel.
+	go pump(audio, opt.Finalize, client.SendAudio, func() error { return client.Finalize() },
+		func() { inputClosed.Store(true); client.Stop() }, sessionCtx.Done())
 
 	select {
 	case <-finished:
@@ -192,4 +180,29 @@ func finalText(mu *sync.Mutex, asm *Assembler) string {
 	mu.Lock()
 	defer mu.Unlock()
 	return asm.Full()
+}
+
+// pump forwards audio chunks and finalize requests to one SDK session. It returns
+// when audio closes (calling onInputClosed) or stop fires. A nil finalize channel
+// blocks forever in select, i.e. it is simply never taken.
+func pump(audio <-chan []byte, finalize <-chan struct{}, send func([]byte) error,
+	fin func() error, onInputClosed func(), stop <-chan struct{}) {
+	for {
+		select {
+		case chunk, ok := <-audio:
+			if !ok {
+				onInputClosed()
+				return
+			}
+			if len(chunk) > 0 {
+				if err := send(chunk); err != nil {
+					return
+				}
+			}
+		case <-finalize:
+			_ = fin() // best effort: a failed finalize just means the final comes later
+		case <-stop:
+			return
+		}
+	}
 }

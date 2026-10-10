@@ -1,0 +1,16 @@
+[Unit]
+Description=Local Soniox transcription core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/soniox-core
+EnvironmentFile=%h/.config/soniox-core/soniox.env
+ExecStart=%h/projects/soniox-core/bin/soniox serve --addr 127.0.0.1:8722 --lang el,en
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target

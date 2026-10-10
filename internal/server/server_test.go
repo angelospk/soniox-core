@@ -308,3 +308,86 @@ func TestHandleReview(t *testing.T) {
 		}
 	})
 }
+
+// --- P16: meaning-only review mode (D30) -------------------------------------
+
+func TestHandleReviewMode(t *testing.T) {
+	post := func(s *Server, body string) (int, map[string]any) {
+		req := httptest.NewRequest(http.MethodPost, "/review", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.handleReview(rec, req)
+		var out map[string]any
+		if rec.Code == http.StatusOK {
+			_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		}
+		return rec.Code, out
+	}
+
+	// The seam records what the handler asked cleanup for, so the mode contract
+	// can be checked without a Gemini round-trip.
+	seam := func(got *cleanup.ReviewOptions, calls *int) func(context.Context, string, string, string,
+		[]cleanup.ReviewUncertain, []string, []string, cleanup.ReviewOptions) ([]cleanup.Finding, string, error) {
+		return func(_ context.Context, _, _, _ string, _ []cleanup.ReviewUncertain,
+			_, _ []string, opt cleanup.ReviewOptions) ([]cleanup.Finding, string, error) {
+			*got = opt
+			*calls++
+			return nil, "test-model", nil
+		}
+	}
+
+	t.Run("explicit meaning-only reaches cleanup", func(t *testing.T) {
+		var opt cleanup.ReviewOptions
+		calls := 0
+		s := &Server{Cleanup: true, GeminiKey: "k", Review: seam(&opt, &calls)}
+		code, _ := post(s, `{"sessionId":"s1","revision":1,"text":"raw","lang":"el","mode":"meaning-only"}`)
+		if code != http.StatusOK {
+			t.Fatalf("status %d", code)
+		}
+		if opt.Mode != cleanup.ReviewModeMeaningOnly {
+			t.Fatalf("mode = %q, want meaning-only", opt.Mode)
+		}
+	})
+
+	t.Run("omitted mode is the legacy default", func(t *testing.T) {
+		var opt cleanup.ReviewOptions
+		calls := 0
+		s := &Server{Cleanup: true, GeminiKey: "k", Review: seam(&opt, &calls)}
+		code, _ := post(s, `{"sessionId":"s2","revision":2,"text":"raw","lang":"el"}`)
+		if code != http.StatusOK {
+			t.Fatalf("status %d", code)
+		}
+		if opt.Mode != cleanup.ReviewModeDefault {
+			t.Fatalf("mode = %q, want default", opt.Mode)
+		}
+	})
+
+	t.Run("unknown mode is a 400 and never reaches cleanup", func(t *testing.T) {
+		var opt cleanup.ReviewOptions
+		calls := 0
+		s := &Server{Cleanup: true, GeminiKey: "k", Review: seam(&opt, &calls)}
+		code, _ := post(s, `{"sessionId":"s3","revision":3,"text":"raw","lang":"el","mode":"rewrite-all"}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("status %d, want 400", code)
+		}
+		if calls != 0 {
+			t.Fatalf("cleanup invoked %d times for a rejected mode", calls)
+		}
+	})
+
+	// A rejected mode must be rejected before any of the expensive work — and
+	// before the response shape is committed to.
+	t.Run("response shape is unchanged for old clients", func(t *testing.T) {
+		var opt cleanup.ReviewOptions
+		calls := 0
+		s := &Server{Cleanup: true, GeminiKey: "k", Review: seam(&opt, &calls)}
+		_, out := post(s, `{"sessionId":"s4","revision":9,"text":"raw","lang":"el"}`)
+		for _, key := range []string{"sessionId", "revision", "findings", "model", "elapsedMs"} {
+			if _, ok := out[key]; !ok {
+				t.Fatalf("response lost %q: %+v", key, out)
+			}
+		}
+		if len(out) != 5 {
+			t.Fatalf("response gained fields: %+v", out)
+		}
+	})
+}

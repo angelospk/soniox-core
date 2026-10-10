@@ -54,6 +54,42 @@ const (
 
 func isDeleteKind(k string) bool { return k == KindFiller || k == KindRedundant }
 
+// ReviewMode selects how aggressive the proof-reader is allowed to be.
+//
+// The zero value is the legacy behaviour on purpose: dictation-bar has been
+// calling Review for months and must keep getting the same four kinds without
+// touching a line of its own code. Meaning-only is the additive P16 mode (D30)
+// for Brain's voice capture, where the contract with the speaker is that the
+// machine may fix what it MIS-HEARD and nothing else (D21) — the words are his,
+// and a "better" phrasing he did not choose is a silent meaning change.
+type ReviewMode string
+
+const (
+	ReviewModeDefault     ReviewMode = ""
+	ReviewModeMeaningOnly ReviewMode = "meaning-only"
+)
+
+// ReviewOptions carries the additive knobs so a future one does not change every
+// call site again.
+type ReviewOptions struct {
+	Mode ReviewMode
+}
+
+func ValidReviewMode(mode ReviewMode) bool {
+	return mode == ReviewModeDefault || mode == ReviewModeMeaningOnly
+}
+
+// allowsKind reports whether a finding kind may survive validation in this mode.
+// Meaning-only enforces the restriction server-side rather than trusting the
+// prompt: a model that ignores an instruction must not be able to delete the
+// speaker's words anyway.
+func (m ReviewMode) allowsKind(kind string) bool {
+	if m == ReviewModeMeaningOnly {
+		return kind == KindMisheard || kind == KindNonsense
+	}
+	return true
+}
+
 // ReviewUncertain is one word the recognizer flagged, with its byte range in the
 // submitted text. Used to disambiguate which occurrence of a repeated word a finding
 // refers to.
@@ -84,22 +120,34 @@ type rawFinding struct {
 	Key  string `json:"key"`
 }
 
-func buildReviewPrompt(text, lang string, unc []ReviewUncertain, vocab []string) string {
+func buildReviewPrompt(text, lang string, unc []ReviewUncertain, vocab []string, mode ReviewMode) string {
 	var b strings.Builder
 	b.WriteString("You are proof-reading a raw speech-to-text transcript for the person who dictated it. ")
 	b.WriteString("Report only problems worth their attention — at most 6, fewer is better, none is a valid answer.\n\n")
 	b.WriteString("Report these kinds:\n")
 	b.WriteString("- \"misheard\": the recognizer clearly heard the wrong word. Give the word they actually said.\n")
 	b.WriteString("- \"nonsense\": a phrase that cannot be what they meant. Give a reading that fits the context.\n")
-	b.WriteString("- \"filler\": a hesitation token that survived cleanup.\n")
-	b.WriteString("- \"redundant\": a verbal tic or self-interruption that carries no meaning and reads better gone.\n\n")
+	if mode == ReviewModeMeaningOnly {
+		b.WriteString("\nReport NOTHING else. Specifically, you MUST NOT report or propose:\n")
+		b.WriteString("- grammar, spelling-as-style, punctuation or capitalisation improvements\n")
+		b.WriteString("- fillers, hesitations, verbal tics, repetitions or self-interruptions\n")
+		b.WriteString("- redundant or wordy phrasing, summarisation, shortening or tightening\n")
+		b.WriteString("- vocabulary, tone or register changes, however small\n")
+		b.WriteString("These are the speaker's own words. Only fix what the recognizer got WRONG.\n")
+		b.WriteString("Every finding MUST have a non-empty \"to\": there are no deletions in this mode.\n\n")
+	} else {
+		b.WriteString("- \"filler\": a hesitation token that survived cleanup.\n")
+		b.WriteString("- \"redundant\": a verbal tic or self-interruption that carries no meaning and reads better gone.\n\n")
+	}
 	b.WriteString("Work through the WHOLE transcript from start to finish. Do not stop at the first problem, ")
 	b.WriteString("and do not limit yourself to the flagged words — spelling mistakes and verbal tics are ")
 	b.WriteString("usually words the recognizer was perfectly confident about.\n\n")
 	b.WriteString("Rules:\n")
 	b.WriteString("- \"from\" MUST be copied character-for-character from the transcript. Never paraphrase it.\n")
 	b.WriteString("- For \"misheard\" and \"nonsense\", \"to\" is the replacement text.\n")
-	b.WriteString("- For \"filler\" and \"redundant\", \"to\" MUST be the empty string \"\".\n")
+	if mode != ReviewModeMeaningOnly {
+		b.WriteString("- For \"filler\" and \"redundant\", \"to\" MUST be the empty string \"\".\n")
+	}
 	b.WriteString("- Keep the grammatical form of the word you are replacing: same case, number and tense. ")
 	b.WriteString("A name listed in the nominative must still be replaced in whatever case the sentence uses.\n")
 	b.WriteString("- Never change the speaker's meaning, tone, vocabulary or register. Do not polish their style.\n")
@@ -239,7 +287,7 @@ func trimRunes(s string, max int) string {
 // validateFindings turns untrusted model output into findings safe to show and to
 // persist. Everything here exists because the alternative is a wrong highlight, a
 // corrupted corrections.tsv line, or a silent no-op edit.
-func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain) []Finding {
+func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain, mode ReviewMode) []Finding {
 	byKey := make(map[string]ReviewUncertain, len(unc))
 	for _, u := range unc {
 		byKey[u.Key] = u
@@ -251,6 +299,9 @@ func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain) []F
 		switch kind {
 		case KindMisheard, KindNonsense, KindFiller, KindRedundant:
 		default:
+			continue
+		}
+		if !mode.allowsKind(kind) {
 			continue
 		}
 		from := r.From
@@ -350,6 +401,16 @@ func ClampReviewInput(text string, unc []ReviewUncertain, vocab []string) (strin
 // the user: a proof-reader that occasionally has no opinion is normal.
 func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertain,
 	vocab []string, models []string, caller modelFunc) ([]Finding, string, error) {
+	return ReviewWithOptions(ctx, apiKey, text, lang, unc, vocab, models, caller,
+		ReviewOptions{Mode: ReviewModeDefault})
+}
+
+// ReviewWithOptions is Review with the additive P16 knobs. Everything else —
+// the six-second total deadline, the per-attempt budget, the fallback model
+// chain, input limits, exact-substring location, non-overlap filtering and the
+// six-finding cap — is unchanged.
+func ReviewWithOptions(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertain,
+	vocab []string, models []string, caller modelFunc, opt ReviewOptions) ([]Finding, string, error) {
 
 	if apiKey == "" || strings.TrimSpace(text) == "" {
 		return nil, "", nil
@@ -360,7 +421,7 @@ func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertai
 	if len(models) == 0 {
 		models = DefaultModels
 	}
-	prompt := buildReviewPrompt(text, lang, unc, vocab)
+	prompt := buildReviewPrompt(text, lang, unc, vocab, opt.Mode)
 
 	total, cancelTotal := context.WithTimeout(ctx, reviewTotalDeadline)
 	defer cancelTotal()
@@ -382,7 +443,7 @@ func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertai
 			lastErr = fmt.Errorf("%w (raw: %.300q)", err, raw)
 			continue
 		}
-		return validateFindings(text, raws, unc), model, nil
+		return validateFindings(text, raws, unc, opt.Mode), model, nil
 	}
 	return nil, "", lastErr
 }

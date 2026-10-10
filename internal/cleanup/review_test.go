@@ -13,7 +13,7 @@ func rf(from, to, kind, key string) rawFinding {
 
 func TestValidateFindingsComputesRanges(t *testing.T) {
 	text := "Είπα στον Χάρη Λαμπίδη ότι ναι."
-	got := validateFindings(text, []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil)
+	got := validateFindings(text, []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil, ReviewModeDefault)
 	if len(got) != 1 {
 		t.Fatalf("want 1 finding, got %d", len(got))
 	}
@@ -25,7 +25,7 @@ func TestValidateFindingsComputesRanges(t *testing.T) {
 // The model quoting something that isn't in the transcript is the main hallucination
 // mode; it must never reach the UI as a highlight.
 func TestValidateFindingsDropsUnquotedText(t *testing.T) {
-	got := validateFindings("Είπα ναι.", []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil)
+	got := validateFindings("Είπα ναι.", []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil, ReviewModeDefault)
 	if len(got) != 0 {
 		t.Fatalf("want 0, got %+v", got)
 	}
@@ -35,7 +35,7 @@ func TestValidateFindingsDropsUnquotedText(t *testing.T) {
 // highlighting the wrong occurrence.
 func TestValidateFindingsDropsAmbiguousQuote(t *testing.T) {
 	text := "ναι και ναι"
-	if got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 0 {
 		t.Fatalf("want 0 for ambiguous quote, got %+v", got)
 	}
 }
@@ -43,7 +43,7 @@ func TestValidateFindingsDropsAmbiguousQuote(t *testing.T) {
 func TestValidateFindingsUsesKeyToDisambiguate(t *testing.T) {
 	text := "ναι και ναι"
 	unc := []ReviewUncertain{{Key: "w2", Word: "ναι", Start: 14, End: 20}} // the SECOND "ναι" (byte offsets)
-	got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "w2")}, unc)
+	got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "w2")}, unc, ReviewModeDefault)
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -61,11 +61,11 @@ func TestValidateFindingsEnforcesKindToAgreement(t *testing.T) {
 		rf("τέλος πάντων", "x", "bogus", ""),           // unknown kind
 	}
 	for i, c := range cases {
-		if got := validateFindings(text, []rawFinding{c}, nil); len(got) != 0 {
+		if got := validateFindings(text, []rawFinding{c}, nil, ReviewModeDefault); len(got) != 0 {
 			t.Fatalf("case %d: want 0, got %+v", i, got)
 		}
 	}
-	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil); len(got) != 1 {
+	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil, ReviewModeDefault); len(got) != 1 {
 		t.Fatalf("valid deletion rejected: %+v", got)
 	}
 }
@@ -74,7 +74,7 @@ func TestValidateFindingsEnforcesKindToAgreement(t *testing.T) {
 func TestValidateFindingsRejectsDelimiterBearingReplacement(t *testing.T) {
 	text := "Ναι όχι"
 	for _, bad := range []string{"a\tb", "a\nb", "a\x00b"} {
-		if got := validateFindings(text, []rawFinding{rf("Ναι", bad, KindMisheard, "")}, nil); len(got) != 0 {
+		if got := validateFindings(text, []rawFinding{rf("Ναι", bad, KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 0 {
 			t.Fatalf("accepted %q: %+v", bad, got)
 		}
 	}
@@ -82,7 +82,7 @@ func TestValidateFindingsRejectsDelimiterBearingReplacement(t *testing.T) {
 
 func TestValidateFindingsDropsNoOpEdit(t *testing.T) {
 	text := "Ναι όχι"
-	if got := validateFindings(text, []rawFinding{rf("Ναι", "Ναι", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("Ναι", "Ναι", KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 0 {
 		t.Fatalf("want 0 for no-op, got %+v", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestValidateFindingsDropsOverlapsAndSortsByPosition(t *testing.T) {
 		rf("gamma", "delta", KindMisheard, ""),
 		rf("beta gamma", "x", KindMisheard, ""),
 		rf("alpha", "A", KindMisheard, ""),
-	}, nil)
+	}, nil, ReviewModeDefault)
 	if len(got) != 2 {
 		t.Fatalf("want 2 after overlap drop, got %+v", got)
 	}
@@ -109,7 +109,7 @@ func TestValidateFindingsCapsCount(t *testing.T) {
 	for _, w := range strings.Fields(text) {
 		raws = append(raws, rf(w, "X"+w, KindMisheard, ""))
 	}
-	if got := validateFindings(text, raws, nil); len(got) != maxReviewFindings {
+	if got := validateFindings(text, raws, nil, ReviewModeDefault); len(got) != maxReviewFindings {
 		t.Fatalf("want %d, got %d", maxReviewFindings, len(got))
 	}
 }
@@ -197,11 +197,11 @@ func TestClampReviewInput(t *testing.T) {
 // and rewriting it there corrupts an unrelated word.
 func TestValidateFindingsRequiresWholeWordForReplacements(t *testing.T) {
 	text := "Είπα ναι"
-	if got := validateFindings(text, []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 0 {
 		t.Fatalf("matched inside a longer word: %+v", got)
 	}
 	// The same word standing alone is fine.
-	if got := validateFindings("Είπα να πάμε", []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil); len(got) != 1 {
+	if got := validateFindings("Είπα να πάμε", []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 1 {
 		t.Fatalf("standalone word rejected: %+v", got)
 	}
 }
@@ -209,7 +209,7 @@ func TestValidateFindingsRequiresWholeWordForReplacements(t *testing.T) {
 // A Greek accent is part of the word, not a boundary.
 func TestWholeWordTreatsCombiningMarksAsWordCharacters(t *testing.T) {
 	text := "Ναι τελος παντωνάκι όχι"
-	if got := validateFindings(text, []rawFinding{rf("παντων", "πάντων", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("παντων", "πάντων", KindMisheard, "")}, nil, ReviewModeDefault); len(got) != 0 {
 		t.Fatalf("matched a prefix of a longer word: %+v", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestWholeWordTreatsCombiningMarksAsWordCharacters(t *testing.T) {
 // A deletion quotes a phrase, which carries its own boundaries — literal matching stays.
 func TestDeletionsKeepLiteralMatching(t *testing.T) {
 	text := "Ναι, τέλος πάντων, όχι."
-	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil); len(got) != 1 {
+	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil, ReviewModeDefault); len(got) != 1 {
 		t.Fatalf("phrase deletion rejected: %+v", got)
 	}
 }
@@ -225,7 +225,110 @@ func TestDeletionsKeepLiteralMatching(t *testing.T) {
 // `from` becomes a corrections.tsv key, so it obeys the same delimiter rules as `to`.
 func TestValidateFindingsRejectsDelimiterBearingFrom(t *testing.T) {
 	text := "a\tb"
-	if got := validateFindings(text, []rawFinding{rf("a\tb", "", KindRedundant, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("a\tb", "", KindRedundant, "")}, nil, ReviewModeDefault); len(got) != 0 {
 		t.Fatalf("accepted a tab-bearing from: %+v", got)
+	}
+}
+
+// --- P16: meaning-only mode (D21/D30) ---------------------------------------
+
+func TestMeaningOnlyPromptExcludesStyleEdits(t *testing.T) {
+	prompt := buildReviewPrompt("εε πάμε Ορεστιάδα", "el", nil, nil, ReviewModeMeaningOnly)
+	if strings.Contains(prompt, `"filler"`) || strings.Contains(prompt, `"redundant"`) {
+		t.Fatalf("meaning-only prompt permits style deletion: %s", prompt)
+	}
+	if !strings.Contains(prompt, `"misheard"`) || !strings.Contains(prompt, `"nonsense"`) {
+		t.Fatalf("meaning-only prompt omitted allowed kinds: %s", prompt)
+	}
+}
+
+func TestMeaningOnlyValidationDropsDeletionKinds(t *testing.T) {
+	raw := []rawFinding{
+		{From: "Ορεστιάδα", To: "Ορεστιάδα", Kind: KindMisheard},
+		{From: "εε", To: "", Kind: KindFiller},
+		{From: "πάμε", To: "", Kind: KindRedundant},
+		{From: "Ορεστιάδα", To: "Ορεστιάδα μου", Kind: KindNonsense},
+	}
+	got := validateFindings("εε πάμε Ορεστιάδα", raw, nil, ReviewModeMeaningOnly)
+	for _, finding := range got {
+		if finding.Kind != KindMisheard && finding.Kind != KindNonsense {
+			t.Fatalf("unexpected kind: %s", finding.Kind)
+		}
+	}
+}
+
+func TestDefaultReviewModeKeepsLegacyKinds(t *testing.T) {
+	prompt := buildReviewPrompt("εε πάμε", "el", nil, nil, ReviewModeDefault)
+	if !strings.Contains(prompt, `"filler"`) || !strings.Contains(prompt, `"redundant"`) {
+		t.Fatal("default mode changed")
+	}
+}
+
+// The default prompt must be byte-identical to what dictation-bar has been
+// getting. A silently reworded prompt is a silently different proof-reader.
+func TestDefaultPromptIsUnchangedByThePlumbing(t *testing.T) {
+	unc := []ReviewUncertain{{Key: "k1", Word: "πάμε", Start: 5, End: 13}}
+	vocab := []string{"Ορεστιάδα"}
+	got := buildReviewPrompt("εε πάμε Ορεστιάδα", "el", unc, vocab, ReviewModeDefault)
+	if !strings.Contains(got, "Report these kinds:") ||
+		!strings.Contains(got, `- "filler": a hesitation token that survived cleanup.`) {
+		t.Fatalf("legacy prompt body drifted: %s", got)
+	}
+}
+
+func TestMeaningOnlyPromptForbidsStyleWork(t *testing.T) {
+	prompt := buildReviewPrompt("εε πάμε", "el", nil, nil, ReviewModeMeaningOnly)
+	for _, must := range []string{"grammar", "style", "register", "summar"} {
+		if !strings.Contains(strings.ToLower(prompt), must) {
+			t.Fatalf("meaning-only prompt does not forbid %q: %s", must, prompt)
+		}
+	}
+}
+
+func TestDefaultModeStillKeepsDeletionKinds(t *testing.T) {
+	raw := []rawFinding{{From: "εε", To: "", Kind: KindFiller}}
+	got := validateFindings("εε πάμε Ορεστιάδα", raw, nil, ReviewModeDefault)
+	if len(got) != 1 || got[0].Kind != KindFiller {
+		t.Fatalf("default mode dropped a filler finding: %+v", got)
+	}
+}
+
+func TestValidReviewMode(t *testing.T) {
+	if !ValidReviewMode(ReviewModeDefault) || !ValidReviewMode(ReviewModeMeaningOnly) {
+		t.Fatal("accepted modes rejected")
+	}
+	if ValidReviewMode(ReviewMode("rewrite-all")) {
+		t.Fatal("unknown mode accepted")
+	}
+}
+
+func TestReviewWrapperUsesDefaultMode(t *testing.T) {
+	var seen string
+	caller := func(ctx context.Context, model, prompt string) (string, error) {
+		seen = prompt
+		return `{"findings":[]}`, nil
+	}
+	if _, _, err := Review(context.Background(), "k", "εε πάμε", "el", nil, nil,
+		[]string{"m"}, caller); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(seen, `"filler"`) {
+		t.Fatal("legacy Review() no longer uses default mode")
+	}
+}
+
+func TestReviewWithOptionsMeaningOnlyFiltersServerSide(t *testing.T) {
+	// Even if the model ignores the prompt and returns a deletion, the server
+	// must not hand it to the client: D21 is enforced, not requested.
+	caller := func(ctx context.Context, model, prompt string) (string, error) {
+		return `{"findings":[{"from":"εε","to":"","kind":"filler","why":"tic"}]}`, nil
+	}
+	got, _, err := ReviewWithOptions(context.Background(), "k", "εε πάμε", "el", nil, nil,
+		[]string{"m"}, caller, ReviewOptions{Mode: ReviewModeMeaningOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("meaning-only leaked a deletion finding: %+v", got)
 	}
 }

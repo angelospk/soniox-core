@@ -171,6 +171,9 @@ func (a *Assembler) AddResult(tokens []TokenLite) (newFinal string) {
 	var nf strings.Builder
 	partial := ""
 	for _, tk := range tokens {
+		if isControlToken(tk.Text) {
+			continue
+		}
 		if tk.IsFinal {
 			a.final.WriteString(tk.Text)
 			nf.WriteString(tk.Text)
@@ -181,6 +184,10 @@ func (a *Assembler) AddResult(tokens []TokenLite) (newFinal string) {
 	a.partial = partial
 	return nf.String()
 }
+
+// isControlToken reports Soniox boundary markers: "<fin>" (manual finalization) and
+// "<end>" (endpoint detection) arrive as final tokens but are not speech.
+func isControlToken(t string) bool { return t == "<fin>" || t == "<end>" }
 
 // Final returns the finalized transcript so far.
 func (a *Assembler) Final() string { return a.final.String() }

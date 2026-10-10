@@ -105,6 +105,7 @@ soniox serve --addr :8722                      # run the service
 | `/live` | WS | stream binary PCM (s16le mono 24kHz) frames; receive JSON `{type: partial\|final\|done, text}`; send text `"done"` to finalize. `?lang=el&lang=en` to override. |
 | `/transcribe` | POST | multipart `file` → JSON `{raw, cleaned, jobs, segments, duration_s, profile, lang, model, cleanup}`; uses the active shared cleanup preferences |
 | `/clean` | POST | JSON `{text, profile, lang, adhoc}` → run the cleanup chain over already-transcribed text |
+| `/review` | POST | JSON `{sessionId, revision, text, lang, uncertain, vocabulary, mode}` → `{sessionId, revision, findings, model, elapsedMs}`; advisory proof-reading, at most 6 findings, 6s deadline |
 | `/alternatives` | POST | JSON `{text, items, lang}` → alternative phrasings for the given spans |
 | `/reconnect` | POST | force a fresh Soniox key → `{ok, source, hint}`. A no-op success with `SONIOX_API_KEY`; otherwise re-runs `SONIOX_KEY_COMMAND` |
 
@@ -118,7 +119,7 @@ internal/segment    silence-snapped parallel-cut planning
 internal/soniox     SDK wrapper + partial/final text assembler
 internal/cleanup    Gemini cleanup (brace-safe prompt, length guard, retry)
 internal/transcribe parallel file engine (decode → streams → merge → cleanup)
-internal/server     /healthz, /live (WS), /transcribe, /clean, /alternatives, /reconnect
+internal/server     /healthz, /live (WS), /transcribe, /clean, /review, /alternatives, /reconnect
 ```
 
 ## Tests
@@ -128,3 +129,28 @@ go test ./...                                   # unit tests (no network)
 # live tests (real API), opt-in via env:
 SONIOX_TEMP_KEY=... GEMINI_API_KEY=... TEST_AUDIO=clip.m4a go test ./...
 ```
+
+
+## `/review` modes
+
+`mode` is additive and optional. Omitting it is the long-standing behaviour, so
+no existing client needs a change.
+
+```jsonc
+// default — misheard, nonsense, filler, redundant
+{"sessionId":"s1","revision":1,"text":"εε πάμε Ορεστιάδα","lang":"el"}
+
+// meaning-only — misheard and nonsense ONLY
+{"sessionId":"s1","revision":1,"text":"εε πάμε Ορεστιάδα","lang":"el","mode":"meaning-only"}
+```
+
+**meaning-only permits replacements only.** It reports what the recognizer got
+*wrong* — a mis-heard word, a phrase that cannot be what was said — and never
+proposes a deletion: no fillers, no verbal tics, no tightening, no grammar,
+style, vocabulary, tone or register changes. The restriction is enforced on the
+server after the model replies, not merely requested in the prompt, so a model
+that ignores the instruction still cannot delete the speaker's words.
+
+Any other `mode` value is a `400`. It is deliberately not treated as "default":
+a caller that asked for the narrow review and silently got the wide one would
+apply edits its user never agreed to.

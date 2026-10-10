@@ -36,6 +36,9 @@ type Server struct {
 	// Test seams; nil uses the production implementation.
 	TranscribeFile func(context.Context, string, transcribe.FileOptions) (transcribe.Result, error)
 	Clean          func(context.Context, string, string, cleanup.Options) cleanup.Result
+	// Review is the proof-reading seam. nil uses cleanup.ReviewWithOptions.
+	Review func(context.Context, string, string, string, []cleanup.ReviewUncertain,
+		[]string, []string, cleanup.ReviewOptions) ([]cleanup.Finding, string, error)
 	// LowConfThreshold flags STT words below this min-confidence to the client (0 → default).
 	LowConfThreshold float64
 	// PrefsDir is the shared prefs dir (~/.soniox-dictate). When set, /live reads
@@ -83,11 +86,32 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: checkOrigin,
 }
 
-// checkOrigin blocks cross-site WebSocket hijacking: native clients (Swift) send
-// no Origin and are allowed; browser pages send an Origin, which must be local.
-func checkOrigin(r *http.Request) bool {
+// allowedOrigins are extra exact browser origins (scheme://host[:port]) accepted besides
+// localhost, e.g. the HTTPS tailnet name a phone uses through `tailscale serve`.
+// Read once from SONIOX_ALLOWED_ORIGINS (comma-separated).
+var allowedOrigins = parseAllowedOrigins(os.Getenv("SONIOX_ALLOWED_ORIGINS"))
+
+func parseAllowedOrigins(raw string) map[string]bool {
+	m := map[string]bool{}
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.ToLower(strings.TrimSpace(o)); o != "" {
+			m[o] = true
+		}
+	}
+	return m
+}
+
+func checkOrigin(r *http.Request) bool { return originAllowed(r, allowedOrigins) }
+
+// originAllowed blocks cross-site WebSocket hijacking: native clients (Swift) send
+// no Origin and are allowed; browser pages send an Origin, which must be local or
+// match one of the configured origins exactly.
+func originAllowed(r *http.Request, extra map[string]bool) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
+		return true
+	}
+	if extra[strings.ToLower(o)] {
 		return true
 	}
 	u, err := url.Parse(o)
@@ -100,6 +124,23 @@ func checkOrigin(r *http.Request) bool {
 	default:
 		return false
 	}
+}
+
+// handleControlFrame applies one text frame from a /live client and reports whether
+// it ends the session. "finalize" asks Soniox to finalize pending tokens now (the
+// client's VAD saw the user stop); it never blocks the read loop — a finalize that is
+// already pending covers this one.
+func handleControlFrame(msg string, finalize chan<- struct{}) (done bool) {
+	switch msg {
+	case "done":
+		return true
+	case "finalize":
+		select {
+		case finalize <- struct{}{}:
+		default:
+		}
+	}
+	return false
 }
 
 // handleLive: client streams binary PCM (s16le mono 24kHz) frames; the server
@@ -123,6 +164,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 
 	var writeMu sync.Mutex
 	audio := make(chan []byte, 64)
+	finalize := make(chan struct{}, 1)
 
 	// reader: pump client frames into the audio channel
 	go func() {
@@ -136,7 +178,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			case websocket.BinaryMessage:
 				audio <- data
 			case websocket.TextMessage:
-				if string(data) == "done" {
+				if handleControlFrame(string(data), finalize) {
 					return
 				}
 			}
@@ -161,6 +203,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			Langs:             langs,
 			EndpointDetection: false,
 			LowConfThreshold:  s.LowConfThreshold,
+			Finalize:          finalize,
 		},
 		audio,
 		soniox.Callbacks{
@@ -371,6 +414,9 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		Lang       string                    `json:"lang"`
 		Uncertain  []cleanup.ReviewUncertain `json:"uncertain"`
 		Vocabulary []string                  `json:"vocabulary"`
+		// Additive (P16/D30). Absent = the legacy four-kind behaviour, so every
+		// existing dictation-bar build keeps working untouched.
+		Mode cleanup.ReviewMode `json:"mode"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -388,6 +434,13 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 			"findings": findings, "model": model, "elapsedMs": ms,
 		})
 	}
+	// Reject an unknown mode outright rather than falling back to the default:
+	// a client that asked for a narrower review and silently got the wider one
+	// would apply edits its user never agreed to.
+	if !cleanup.ValidReviewMode(req.Mode) {
+		http.Error(w, "unsupported review mode", http.StatusBadRequest)
+		return
+	}
 	text, unc, vocab, err := cleanup.ClampReviewInput(req.Text, req.Uncertain, req.Vocabulary)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -398,9 +451,16 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		write(nil, "", 0)
 		return
 	}
+	review := s.Review
+	if review == nil {
+		review = func(ctx context.Context, key, text, lang string, unc []cleanup.ReviewUncertain,
+			vocab, models []string, opt cleanup.ReviewOptions) ([]cleanup.Finding, string, error) {
+			return cleanup.ReviewWithOptions(ctx, key, text, lang, unc, vocab, models, nil, opt)
+		}
+	}
 	start := time.Now()
-	findings, model, err := cleanup.Review(r.Context(), s.GeminiKey, text, req.Lang, unc, vocab,
-		s.modelChain(), nil)
+	findings, model, err := review(r.Context(), s.GeminiKey, text, req.Lang, unc, vocab,
+		s.modelChain(), cleanup.ReviewOptions{Mode: req.Mode})
 	if err != nil {
 		log.Printf("review: %v", err)
 		write(nil, "", time.Since(start).Milliseconds())
