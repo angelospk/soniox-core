@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -19,6 +20,7 @@ type liveStats struct {
 	audioBytes                   int
 	peak                         int // max |sample| of the s16le PCM, 0..32768
 	partials, finals, reconnects int
+	ptext                        int    // longest partial, in runes
 	client                       string // why the client socket closed early, if it did
 }
 
@@ -47,6 +49,16 @@ func (s *liveStats) addAudio(b []byte) {
 	}
 }
 
+// partial counts one partial result and keeps the longest partial text seen.
+func (s *liveStats) partial(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.partials++
+	if n := utf8.RuneCountInString(t); n > s.ptext {
+		s.ptext = n
+	}
+}
+
 func (s *liveStats) inc(n *int) {
 	s.mu.Lock()
 	*n++
@@ -59,8 +71,8 @@ func (s *liveStats) line(chars int, err error) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	audioS := float64(s.audioBytes) / float64(soniox.SampleRate*2)
-	l := fmt.Sprintf("live end dur=%.0f audioS=%.1f peak=%d partials=%d finals=%d reconnects=%d chars=%d",
-		time.Since(s.start).Seconds(), audioS, s.peak, s.partials, s.finals, s.reconnects, chars)
+	l := fmt.Sprintf("live end dur=%.0f audioS=%.1f peak=%d partials=%d finals=%d reconnects=%d ptext=%d chars=%d",
+		time.Since(s.start).Seconds(), audioS, s.peak, s.partials, s.finals, s.reconnects, s.ptext, chars)
 	if err != nil {
 		l += fmt.Sprintf(" err=%q", err.Error())
 	}

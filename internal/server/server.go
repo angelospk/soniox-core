@@ -177,7 +177,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 				writeJSON(conn, &writeMu, m)
 			},
 			OnPartial: func(t string) {
-				st.inc(&st.partials)
+				st.partial(t)
 				writeJSON(conn, &writeMu, map[string]any{"type": "partial", "text": t})
 			},
 			OnReconnect: func(n int) {

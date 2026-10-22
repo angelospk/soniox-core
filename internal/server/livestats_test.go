@@ -33,3 +33,15 @@ func TestLiveStatsLine(t *testing.T) {
 		t.Fatalf("got %q", ok)
 	}
 }
+
+// ptext is the longest partial seen: >0 on an EMPTY line means Soniox heard
+// words that never became final text; 0 means it recognized nothing.
+func TestLiveStatsPartialText(t *testing.T) {
+	s := &liveStats{start: time.Now()}
+	s.partial("")
+	s.partial("καλη")
+	s.partial("κα")
+	if got := s.line(0, nil); !strings.Contains(got, "partials=3") || !strings.Contains(got, "ptext=4") {
+		t.Fatalf("line = %q", got)
+	}
+}
