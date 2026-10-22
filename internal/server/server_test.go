@@ -309,11 +309,11 @@ func TestHandleReview(t *testing.T) {
 	})
 }
 
-// TestSkipCleanSendCommand: "εντολή στείλε" is stripped and flagged so the client
+// TestSkipCleanSendCommand: "τέλος μηνύματος" is stripped and flagged so the client
 // presses Return after the paste.
 func TestSkipCleanSendCommand(t *testing.T) {
 	s := &Server{PrefsDir: t.TempDir()}
-	text, meta := s.skipClean("τα λέμε αύριο, εντολή στείλε.")
+	text, meta := s.skipClean("τα λέμε αύριο, τέλος μηνύματος.")
 	if text != "τα λέμε αύριο" || !meta.Send {
 		t.Fatalf("got text=%q send=%v", text, meta.Send)
 	}

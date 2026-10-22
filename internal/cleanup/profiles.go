@@ -326,29 +326,40 @@ func resolveMode(mode string, profiles map[string]Profile) string {
 	return ""
 }
 
-// SendWord, spoken as the LAST word of a voice command ("…, εντολή στείλε"), asks the
-// client to press Return after pasting, so a chat message is sent hands-free. It can
-// follow a profile or ad-hoc command ("εντολή μήνυμα στείλε"). A bare "<keyword>
-// στείλε" needs no pause before the keyword: the two-word phrase is the safeguard.
-const SendWord = "στείλε"
+// SendPhrase, spoken as the LAST words of a dictation ("…, τέλος μηνύματος"), asks
+// the client to press Return after pasting, so a chat message is sent hands-free. It
+// needs no command keyword: two long words rarely said together at the very end are
+// the safeguard. It can follow a profile or ad-hoc command ("εντολή μήνυμα τέλος
+// μηνύματος").
+var SendPhrase = []string{"τέλος", "μηνύματος"}
 
-// ParseCommandSend is ParseCommand plus the trailing SendWord. send reports whether
-// the command ended in SendWord; the word is stripped along with the command. A
-// trailing "στείλε" with no command keyword before it is ordinary speech.
+// ParseCommandSend is ParseCommand plus the trailing SendPhrase. send reports whether
+// the text ended in SendPhrase; the phrase is stripped along with any command before it.
 func ParseCommandSend(raw, keyword string, profiles map[string]Profile) (profile, adHoc, stripped string, found, send bool) {
 	if strings.TrimSpace(keyword) == "" {
 		keyword = DefaultKeyword
 	}
-	if rest, ok := cutLastWord(raw, SendWord); ok {
-		if pre, ok := cutLastWord(rest, keyword); ok {
-			return "", "", strings.TrimRightFunc(pre, isCut), true, true
-		}
+	if rest, ok := cutLastWords(raw, SendPhrase); ok {
 		if p, a, s, ok := ParseCommand(rest, keyword, profiles); ok {
 			return p, a, s, true, true
 		}
+		return "", "", strings.TrimRightFunc(rest, isCut), true, true
 	}
 	profile, adHoc, stripped, found = ParseCommand(raw, keyword, profiles)
 	return profile, adHoc, stripped, found, false
+}
+
+// cutLastWords reports whether s ends in words (each matched like cutLastWord) and
+// returns s before them.
+func cutLastWords(s string, words []string) (string, bool) {
+	rest := s
+	for i := len(words) - 1; i >= 0; i-- {
+		var ok bool
+		if rest, ok = cutLastWord(rest, words[i]); !ok {
+			return s, false
+		}
+	}
+	return rest, true
 }
 
 // cutLastWord reports whether the last whitespace-separated token of s equals word

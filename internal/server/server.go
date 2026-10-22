@@ -590,7 +590,7 @@ type cleanupMeta struct {
 	Reason    string
 	ElapsedMs int64
 	Adhoc     bool
-	Send      bool // spoken "εντολή στείλε": client presses Return after pasting
+	Send      bool // spoken "τέλος μηνύματος": client presses Return after pasting
 }
 
 // logCleanup writes one structured line per cleanup. Reason is already a sanitized
