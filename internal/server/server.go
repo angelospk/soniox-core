@@ -611,22 +611,7 @@ func (s *Server) modelChain() []string {
 	if s.PrefsDir == "" {
 		return nil // legacy/test path → cleanup uses DefaultModels
 	}
-	b, err := os.ReadFile(filepath.Join(s.PrefsDir, "cleanup-models")) // #nosec G304 -- fixed prefs path
-	if err != nil {
-		return nil
-	}
-	var models []string
-	for _, ln := range strings.Split(string(b), "\n") {
-		if i := strings.IndexByte(ln, '#'); i >= 0 {
-			ln = ln[:i]
-		}
-		for _, tok := range strings.FieldsFunc(ln, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
-			if tok = strings.TrimSpace(tok); tok != "" {
-				models = append(models, tok)
-			}
-		}
-	}
-	return models // empty → cleanup falls back to DefaultModels
+	return cleanup.ReadModelChain(filepath.Join(s.PrefsDir, "cleanup-models"))
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

@@ -2,6 +2,8 @@
 //
 //	soniox file <audio>           transcribe a file (parallel) -> stdout
 //	soniox serve [--addr :8722]   run the HTTP/WS service
+//	soniox weekly-review          rank last week's recurring transcript errors
+//	soniox apply-review -ids 1,3  save chosen fixes as correction rules
 package main
 
 import (
@@ -79,6 +81,10 @@ func main() {
 	switch os.Args[1] {
 	case "file":
 		cmdFile(os.Args[2:])
+	case "weekly-review":
+		cmdWeeklyReview(os.Args[2:])
+	case "apply-review":
+		cmdApplyReview(os.Args[2:])
 	case "serve":
 		cmdServe(os.Args[2:])
 	case "tempkey":
@@ -94,7 +100,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:\n  soniox file <audio> [--lang el,en] [--jobs N] [--no-clean]\n  soniox serve [--addr :8722] [--lang el,en]")
+	fmt.Fprintln(os.Stderr, "usage:\n  soniox file <audio> [--lang el,en] [--jobs N] [--no-clean]\n  soniox serve [--addr :8722] [--lang el,en]\n  soniox weekly-review [--days 7] [--limit 30]\n  soniox apply-review --ids 1,3 [--vocab 2] [--report path]")
 }
 
 func cmdFile(args []string) {
