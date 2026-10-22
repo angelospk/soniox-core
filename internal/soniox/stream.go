@@ -12,6 +12,20 @@ import (
 
 const maxReconnects = 4
 
+// sttClient is the part of the SDK client a session uses; a seam for tests.
+type sttClient interface {
+	Start(ctx context.Context, opts sdk.SessionOptions) error
+	SendAudio(data []byte) error
+	Stop() error
+	Cancel()
+	Close() error
+}
+
+var (
+	newClient = func(o sdk.ClientOptions) sttClient { return sdk.NewClient(o) }
+	backoff   = func(attempt int) time.Duration { return time.Duration(min(2*(attempt+1), 8)) * time.Second }
+)
+
 // Options configure a streaming session.
 type Options struct {
 	APIKey            string                 // static key
@@ -42,9 +56,10 @@ func Stream(ctx context.Context, opt Options, audio <-chan []byte, cb Callbacks)
 		asm         Assembler
 		inputClosed atomic.Bool
 		lastErr     error
+		carry       []byte // chunk whose send failed; resent by the next session
 	)
 	for attempt := 0; ; attempt++ {
-		clean, err := runSession(ctx, opt, &mu, &asm, audio, cb, &inputClosed)
+		clean, err := runSession(ctx, opt, &mu, &asm, audio, cb, &inputClosed, &carry)
 		if clean {
 			lastErr = nil
 			break
@@ -61,7 +76,7 @@ func Stream(ctx context.Context, opt Options, audio <-chan []byte, cb Callbacks)
 			cb.OnReconnect(attempt + 1)
 		}
 		select {
-		case <-time.After(time.Duration(min(2*(attempt+1), 8)) * time.Second):
+		case <-time.After(backoff(attempt)):
 		case <-ctx.Done():
 			lastErr = ctx.Err()
 			return finalText(&mu, &asm), lastErr
@@ -74,7 +89,7 @@ func Stream(ctx context.Context, opt Options, audio <-chan []byte, cb Callbacks)
 // (OnFinished). On a drop it returns clean=false with the error; the audio
 // channel is left open so the caller can reconnect.
 func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler,
-	audio <-chan []byte, cb Callbacks, inputClosed *atomic.Bool) (bool, error) {
+	audio <-chan []byte, cb Callbacks, inputClosed *atomic.Bool, carry *[]byte) (bool, error) {
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -87,7 +102,7 @@ func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler
 	)
 	done := func() { once.Do(func() { close(finished) }) }
 
-	client := sdk.NewClient(sdk.ClientOptions{
+	client := newClient(sdk.ClientOptions{
 		APIKey:     opt.APIKey,
 		APIKeyFunc: opt.APIKeyFunc,
 		KeepAlive:  true,
@@ -149,24 +164,25 @@ func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler
 
 	// sender: pump audio until the channel closes (input done) or the session
 	// ends (sessionCtx cancelled) — without closing the shared audio channel.
+	// A failed send ends the session with an error so Stream reconnects and the
+	// next session resends that chunk; before, the sender exited silently and
+	// the rest of the dictation was dropped.
+	first := *carry
+	*carry = nil
+	pumped := make(chan struct{})
 	go func() {
-		for {
-			select {
-			case chunk, ok := <-audio:
-				if !ok {
-					inputClosed.Store(true)
-					client.Stop()
-					return
+		defer close(pumped)
+		pump(sessionCtx, audio, first, client.SendAudio,
+			func() { inputClosed.Store(true); client.Stop() },
+			func(err error, chunk []byte) {
+				mu.Lock()
+				*carry = chunk
+				if sessErr == nil {
+					sessErr = fmt.Errorf("send audio: %w", err)
 				}
-				if len(chunk) > 0 {
-					if err := client.SendAudio(chunk); err != nil {
-						return
-					}
-				}
-			case <-sessionCtx.Done():
-				return
-			}
-		}
+				mu.Unlock()
+				done()
+			})
 	}()
 
 	select {
@@ -181,11 +197,42 @@ func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler
 	}
 	cancel() // stop the sender
 	client.Close()
+	<-pumped // a late send must not race the next session for carry or audio
 
 	mu.Lock()
 	ok, e := finishedOK, sessErr
 	mu.Unlock()
 	return ok, e
+}
+
+// pump sends first (if any), then forwards audio chunks to send until audio
+// closes (then stop) or ctx ends. On a send error it calls fail with the
+// unsent chunk and returns.
+func pump(ctx context.Context, audio <-chan []byte, first []byte,
+	send func([]byte) error, stop func(), fail func(error, []byte)) {
+	if len(first) > 0 {
+		if err := send(first); err != nil {
+			fail(err, first)
+			return
+		}
+	}
+	for {
+		select {
+		case chunk, ok := <-audio:
+			if !ok {
+				stop()
+				return
+			}
+			if len(chunk) > 0 {
+				if err := send(chunk); err != nil {
+					fail(err, chunk)
+					return
+				}
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func finalText(mu *sync.Mutex, asm *Assembler) string {
