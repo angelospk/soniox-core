@@ -14,8 +14,9 @@ SDK (real-time `stt-rt-v5` over WebSocket) — we don't reimplement the protocol
   (`cleanLive`). Tune prompts against real transcripts with `cmd/evalcleanup`.
 - **[dictation-bar](https://github.com/angelospk/dictation-bar)** — the Swift menu-bar
   client (mic, paste, transcript history window, `sessions.jsonl`).
-- **[soniox-dictate](https://github.com/angelospk/soniox-dictate)** — older sibling; holds
-  `GEMINI_API_KEY` in its `.env`.
+- **[soniox-dictate](https://github.com/angelospk/soniox-dictate)** — archived Python
+  prototype; not used at runtime. Keys (`GEMINI_API_KEY`, `SONIOX_KEY_COMMAND`) live in
+  `~/.soniox-core/.env`.
 
 Shared state in `~/.soniox-dictate/` (read **per request**, so prompt/profile edits
 apply with no restart; a binary rebuild needs a restart): `prompts/*.md`,
