@@ -118,9 +118,11 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		// of just surfacing the failure — this is the "key expired / can't refresh"
 		// path a manual Reconnect would also fix.
 		writeJSON(conn, nil, map[string]any{"type": "error", "kind": "key", "message": err.Error()})
+		log.Printf("live key error: %v", err)
 		return
 	}
 
+	st := &liveStats{start: time.Now()}
 	var writeMu sync.Mutex
 	audio := make(chan []byte, 64)
 
@@ -130,10 +132,12 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		for {
 			mt, data, err := conn.ReadMessage()
 			if err != nil {
+				st.clientGone(err)
 				return
 			}
 			switch mt {
 			case websocket.BinaryMessage:
+				st.addAudio(data)
 				audio <- data
 			case websocket.TextMessage:
 				if string(data) == "done" {
@@ -165,15 +169,23 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		audio,
 		soniox.Callbacks{
 			OnFinal: func(t string, low []soniox.LowConfRange) {
+				st.inc(&st.finals)
 				m := map[string]any{"type": "final", "text": t}
 				if len(low) > 0 { // new field; old clients ignore it (no crash, no highlight)
 					m["low_conf_ranges"] = low
 				}
 				writeJSON(conn, &writeMu, m)
 			},
-			OnPartial:   func(t string) { writeJSON(conn, &writeMu, map[string]any{"type": "partial", "text": t}) },
-			OnReconnect: func(n int) { writeJSON(conn, &writeMu, map[string]any{"type": "reconnecting", "attempt": n}) },
+			OnPartial: func(t string) {
+				st.inc(&st.partials)
+				writeJSON(conn, &writeMu, map[string]any{"type": "partial", "text": t})
+			},
+			OnReconnect: func(n int) {
+				st.inc(&st.reconnects)
+				writeJSON(conn, &writeMu, map[string]any{"type": "reconnecting", "attempt": n})
+			},
 		})
+	log.Print(st.line(len(strings.TrimSpace(full)), err))
 	if err != nil {
 		writeJSON(conn, &writeMu, map[string]any{"type": "error", "message": err.Error()})
 		return
