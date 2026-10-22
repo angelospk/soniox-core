@@ -41,10 +41,7 @@ func realSuggestModel(apiKey string) modelFunc {
 			Contents:         []content{{Parts: []part{{Text: prompt}}}},
 			GenerationConfig: cfg,
 		})
-		url := fmt.Sprintf(
-			"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-			model, apiKey)
-		return callOnce(ctx, url, body)
+		return callOnce(ctx, apiKey, geminiURL(model), body)
 	}
 }
 

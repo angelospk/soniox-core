@@ -345,10 +345,7 @@ func realModel(apiKey string) modelFunc {
 			Contents:         []content{{Parts: []part{{Text: prompt}}}},
 			GenerationConfig: genConfig(model),
 		})
-		url := fmt.Sprintf(
-			"https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
-			model, apiKey)
-		return callOnce(ctx, url, body)
+		return callOnce(ctx, apiKey, geminiURL(model), body)
 	}
 }
 
@@ -415,12 +412,19 @@ func Clean(ctx context.Context, apiKey, text string, opt Options) (string, error
 	return r.Text, nil
 }
 
-func callOnce(ctx context.Context, url string, body []byte) (string, error) {
+// geminiURL is the generateContent endpoint for model. It carries no API key: Go
+// embeds the request URL in transport errors, and those reach the server log.
+func geminiURL(model string) string {
+	return "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
+}
+
+func callOnce(ctx context.Context, apiKey, url string, body []byte) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

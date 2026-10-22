@@ -378,11 +378,12 @@ func callGemini(key, model, prompt string) (string, int, error) {
 		"contents":         []any{map[string]any{"parts": []any{map[string]any{"text": prompt}}}},
 		"generationConfig": map[string]any{"temperature": 0, "thinkingConfig": map[string]any{"thinkingBudget": 0}},
 	})
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, key)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", model)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body)) // #nosec G704 -- fixed Google endpoint, model allow-listed by validModel
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", key)   // header, not URL: errors embed the URL
 	resp, err := http.DefaultClient.Do(req) // #nosec G704 -- request URL is the fixed endpoint above
 	if err != nil {
 		return "", 0, err
