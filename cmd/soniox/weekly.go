@@ -41,14 +41,15 @@ func cmdWeeklyReview(args []string) {
 	}
 	vocab := splitLines(readVocab())
 	models := cleanup.ReadModelChain(filepath.Join(prefsDir(), "cleanup-models"))
-	chunks := weekly.Chunks(texts, cleanup.MaxReviewTextBytes)
+	// 12 KB: big enough to batch many short dictations, small enough that a
+	// flash-lite model answers well inside the batch deadline.
+	chunks := weekly.Chunks(texts, 12<<10)
 	failed := 0
 	review := func(ctx context.Context, text string) ([]cleanup.Finding, error) {
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		f, _, err := cleanup.Review(ctx, key, text, "", nil, vocab, models, nil)
+		f, _, err := cleanup.ReviewBatch(ctx, key, text, "", vocab, models, nil)
 		if err != nil {
 			failed++
+			fmt.Fprintf(os.Stderr, "weekly-review: chunk failed: %v\n", err)
 		}
 		return f, err
 	}

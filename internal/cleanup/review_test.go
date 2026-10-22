@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func rf(from, to, kind, key string) rawFinding {
@@ -227,5 +228,22 @@ func TestValidateFindingsRejectsDelimiterBearingFrom(t *testing.T) {
 	text := "a\tb"
 	if got := validateFindings(text, []rawFinding{rf("a\tb", "", KindRedundant, "")}, nil); len(got) != 0 {
 		t.Fatalf("accepted a tab-bearing from: %+v", got)
+	}
+}
+
+// ReviewBatch reviews a long multi-dictation chunk offline, so each model attempt
+// gets far more than the live 2.5 s budget.
+func TestReviewBatchUsesLongDeadline(t *testing.T) {
+	var left time.Duration
+	caller := func(ctx context.Context, _, _ string) (string, error) {
+		d, _ := ctx.Deadline()
+		left = time.Until(d)
+		return `{"findings":[]}`, nil
+	}
+	if _, _, err := ReviewBatch(context.Background(), "k", "Είπα ναι.", "el", nil, []string{"m1"}, caller); err != nil {
+		t.Fatal(err)
+	}
+	if left < 30*time.Second {
+		t.Fatalf("attempt deadline %v, want >= 30s", left)
 	}
 }

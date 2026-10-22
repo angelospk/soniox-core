@@ -357,12 +357,38 @@ func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertai
 	if caller == nil {
 		caller = realSuggestModel(apiKey) // JSON-mode transport, shared with Suggest
 	}
+	return reviewWith(ctx, text, lang, unc, vocab, models, caller, reviewPerAttempt, reviewTotalDeadline)
+}
+
+// ReviewBatch is Review for an offline pass over many dictations at once (the weekly
+// review): one long text, no uncertain-word hints, and minute-scale deadlines instead
+// of the live path's sub-3-second budget.
+func ReviewBatch(ctx context.Context, apiKey, text, lang string, vocab, models []string,
+	caller modelFunc) ([]Finding, string, error) {
+
+	if apiKey == "" || strings.TrimSpace(text) == "" {
+		return nil, "", nil
+	}
+	if caller == nil {
+		caller = realSuggestModel(apiKey)
+	}
+	return reviewWith(ctx, text, lang, nil, vocab, models, caller, batchPerAttempt, batchTotalDeadline)
+}
+
+const (
+	batchPerAttempt    = 90 * time.Second
+	batchTotalDeadline = 4 * time.Minute
+)
+
+func reviewWith(ctx context.Context, text, lang string, unc []ReviewUncertain, vocab, models []string,
+	caller modelFunc, perAttempt, totalDeadline time.Duration) ([]Finding, string, error) {
+
 	if len(models) == 0 {
 		models = DefaultModels
 	}
 	prompt := buildReviewPrompt(text, lang, unc, vocab)
 
-	total, cancelTotal := context.WithTimeout(ctx, reviewTotalDeadline)
+	total, cancelTotal := context.WithTimeout(ctx, totalDeadline)
 	defer cancelTotal()
 
 	var lastErr error
@@ -370,7 +396,7 @@ func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertai
 		if total.Err() != nil {
 			break
 		}
-		attempt, cancel := context.WithTimeout(total, reviewPerAttempt)
+		attempt, cancel := context.WithTimeout(total, perAttempt)
 		raw, err := caller(attempt, model, prompt)
 		cancel()
 		if err != nil {
