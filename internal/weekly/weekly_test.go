@@ -46,8 +46,13 @@ func TestChunks(t *testing.T) {
 	}
 	long := strings.Repeat("α", 20) // 40 bytes
 	got = Chunks([]string{long}, 11)
-	if len(got) != 1 || len(got[0]) > 11 || !utf8.ValidString(got[0]) {
-		t.Fatalf("oversized text not truncated at a rune boundary: %q", got)
+	if strings.Join(got, "") != long {
+		t.Fatalf("oversized text lost runes: %q", got)
+	}
+	for _, c := range got {
+		if len(c) > 11 || !utf8.ValidString(c) {
+			t.Fatalf("piece not split at a rune boundary: %q", got)
+		}
 	}
 	if got := Chunks(nil, 10); len(got) != 0 {
 		t.Fatalf("got %q", got)
@@ -184,5 +189,89 @@ func TestDropKnown(t *testing.T) {
 	}
 	if got := DropKnown(items, filepath.Join(t.TempDir(), "missing")); len(got) != 4 {
 		t.Fatalf("missing file must keep all items, got %d", len(got))
+	}
+}
+
+// A dictation longer than one chunk is split, never cut: no text is lost.
+func TestChunksSplitsLongTextWithoutLoss(t *testing.T) {
+	long := strings.Repeat("λέξη ", 10) // 50 bytes of words... in Greek, 9 bytes per "λέξη "
+	got := Chunks([]string{long}, 20)
+	if len(got) < 2 {
+		t.Fatalf("not split: %q", got)
+	}
+	var words int
+	for _, c := range got {
+		if len(c) > 20 || !utf8.ValidString(c) {
+			t.Fatalf("bad chunk %q", c)
+		}
+		words += len(strings.Fields(c))
+	}
+	if words != 10 {
+		t.Fatalf("lost words: %d of 10 in %q", words, got)
+	}
+}
+
+// Count reflects how often the error occurs, not how often the model reported it.
+func TestAggregateCountsOccurrences(t *testing.T) {
+	in := []ChunkFindings{{Text: "Πορταρά, πορταρά και ΠΟΡΤΑΡΆ", Findings: []cleanup.Finding{
+		{From: "Πορταρά", To: "Πρωταρά", Kind: cleanup.KindMisheard},
+	}}}
+	if got := Aggregate(in); len(got) != 1 || got[0].Count != 3 { // case-insensitive
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestApplyLeavesNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	corr := filepath.Join(dir, "corrections.tsv")
+	items := []Item{{ID: 1, Kind: cleanup.KindMisheard, From: "α", To: "β"}}
+	if _, err := Apply(items, []int{1}, []int{1}, corr, filepath.Join(dir, "v.txt")); err != nil {
+		t.Fatal(err)
+	}
+	ents, _ := os.ReadDir(dir)
+	if len(ents) != 2 {
+		var names []string
+		for _, e := range ents {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("leftover files: %v", names)
+	}
+}
+
+// Every run gets its own report, so ids picked from one report never hit another.
+func TestReportNameIsUniquePerRun(t *testing.T) {
+	a := ReportName(time.Date(2026, 10, 22, 14, 5, 1, 0, time.UTC))
+	b := ReportName(time.Date(2026, 10, 22, 14, 5, 2, 0, time.UTC))
+	if a == b || !strings.HasSuffix(a, ".json") || !strings.HasPrefix(a, "2026-10-22") {
+		t.Fatalf("a=%q b=%q", a, b)
+	}
+}
+
+// Whole words only, and a key counts once per chunk even if the model reports it
+// in two casings.
+func TestAggregateCountsWholeWordsOncePerChunk(t *testing.T) {
+	in := []ChunkFindings{{Text: "να ναι να", Findings: []cleanup.Finding{
+		{From: "να", To: "νά", Kind: cleanup.KindMisheard},
+		{From: "Να", To: "νά", Kind: cleanup.KindMisheard},
+	}}}
+	if got := Aggregate(in); len(got) != 1 || got[0].Count != 2 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSaveNewReportNeverOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 10, 22, 14, 5, 1, 0, time.UTC)
+	a, err := SaveNewReport(dir, at, []Item{{ID: 1, From: "a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := SaveNewReport(dir, at, []Item{{ID: 1, From: "b"}})
+	if err != nil || a == b {
+		t.Fatalf("a=%q b=%q err=%v", a, b, err)
+	}
+	ia, _ := LoadReport(a)
+	if len(ia) != 1 || ia[0].From != "a" {
+		t.Fatalf("first report changed: %+v", ia)
 	}
 }

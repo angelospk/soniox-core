@@ -84,10 +84,10 @@ type rawFinding struct {
 	Key  string `json:"key"`
 }
 
-func buildReviewPrompt(text, lang string, unc []ReviewUncertain, vocab []string) string {
+func buildReviewPrompt(text, lang string, unc []ReviewUncertain, vocab []string, maxFindings int) string {
 	var b strings.Builder
 	b.WriteString("You are proof-reading a raw speech-to-text transcript for the person who dictated it. ")
-	b.WriteString("Report only problems worth their attention — at most 6, fewer is better, none is a valid answer.\n\n")
+	fmt.Fprintf(&b, "Report only problems worth their attention — at most %d, fewer is better, none is a valid answer.\n\n", maxFindings)
 	b.WriteString("Report these kinds:\n")
 	b.WriteString("- \"misheard\": the recognizer clearly heard the wrong word. Give the word they actually said.\n")
 	b.WriteString("- \"nonsense\": a phrase that cannot be what they meant. Give a reading that fits the context.\n")
@@ -163,7 +163,7 @@ func parseReview(raw string) ([]rawFinding, error) {
 // known uncertain range — then the occurrence nearest that range wins. Without a key an
 // ambiguous quote is dropped: silently highlighting the wrong occurrence is worse than
 // showing one finding fewer.
-func locate(text, from string, key string, byKey map[string]ReviewUncertain, wholeWords bool) (int, int, bool) {
+func locate(text, from string, key string, byKey map[string]ReviewUncertain, wholeWords, firstOfMany bool) (int, int, bool) {
 	if from == "" {
 		return 0, 0, false
 	}
@@ -185,7 +185,7 @@ func locate(text, from string, key string, byKey map[string]ReviewUncertain, who
 	switch {
 	case len(hits) == 0:
 		return 0, 0, false
-	case len(hits) == 1:
+	case len(hits) == 1, firstOfMany:
 		return hits[0], hits[0] + len(from), true
 	}
 	anchor, ok := byKey[key]
@@ -239,12 +239,25 @@ func trimRunes(s string, max int) string {
 // validateFindings turns untrusted model output into findings safe to show and to
 // persist. Everything here exists because the alternative is a wrong highlight, a
 // corrupted corrections.tsv line, or a silent no-op edit.
-func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain) []Finding {
+// reviewLimits separates the live pass (a few findings, each pinned to one place
+// so the client can edit it) from the weekly batch (more findings; a phrase that
+// repeats across dictations is the point, so its first occurrence stands in).
+type reviewLimits struct {
+	maxFindings int
+	firstOfMany bool
+}
+
+var (
+	liveLimits  = reviewLimits{maxFindings: maxReviewFindings}
+	batchLimits = reviewLimits{maxFindings: 25, firstOfMany: true}
+)
+
+func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain, lim reviewLimits) []Finding {
 	byKey := make(map[string]ReviewUncertain, len(unc))
 	for _, u := range unc {
 		byKey[u.Key] = u
 	}
-	out := make([]Finding, 0, maxReviewFindings)
+	out := make([]Finding, 0, lim.maxFindings)
 	seen := map[[2]int]bool{}
 	for _, r := range raws {
 		kind := strings.ToLower(strings.TrimSpace(r.Kind))
@@ -280,7 +293,7 @@ func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain) []F
 		// A whole-word check for single-word replacements only; a quoted phrase (which is
 		// what deletions and multi-word fixes are) carries its own boundaries.
 		wholeWords := !isDeleteKind(kind) && !strings.ContainsAny(from, " \t\n")
-		start, end, ok := locate(text, from, r.Key, byKey, wholeWords)
+		start, end, ok := locate(text, from, r.Key, byKey, wholeWords, lim.firstOfMany)
 		if !ok {
 			continue
 		}
@@ -308,7 +321,7 @@ func validateFindings(text string, raws []rawFinding, unc []ReviewUncertain) []F
 		}
 		kept = append(kept, f)
 		prevEnd = f.End
-		if len(kept) == maxReviewFindings {
+		if len(kept) == lim.maxFindings {
 			break
 		}
 	}
@@ -357,7 +370,7 @@ func Review(ctx context.Context, apiKey, text, lang string, unc []ReviewUncertai
 	if caller == nil {
 		caller = realSuggestModel(apiKey) // JSON-mode transport, shared with Suggest
 	}
-	return reviewWith(ctx, text, lang, unc, vocab, models, caller, reviewPerAttempt, reviewTotalDeadline)
+	return reviewWith(ctx, text, lang, unc, vocab, models, caller, reviewPerAttempt, reviewTotalDeadline, liveLimits)
 }
 
 // ReviewBatch is Review for an offline pass over many dictations at once (the weekly
@@ -372,7 +385,7 @@ func ReviewBatch(ctx context.Context, apiKey, text, lang string, vocab, models [
 	if caller == nil {
 		caller = realSuggestModel(apiKey)
 	}
-	return reviewWith(ctx, text, lang, nil, vocab, models, caller, batchPerAttempt, batchTotalDeadline)
+	return reviewWith(ctx, text, lang, nil, vocab, models, caller, batchPerAttempt, batchTotalDeadline, batchLimits)
 }
 
 const (
@@ -381,12 +394,12 @@ const (
 )
 
 func reviewWith(ctx context.Context, text, lang string, unc []ReviewUncertain, vocab, models []string,
-	caller modelFunc, perAttempt, totalDeadline time.Duration) ([]Finding, string, error) {
+	caller modelFunc, perAttempt, totalDeadline time.Duration, lim reviewLimits) ([]Finding, string, error) {
 
 	if len(models) == 0 {
 		models = DefaultModels
 	}
-	prompt := buildReviewPrompt(text, lang, unc, vocab)
+	prompt := buildReviewPrompt(text, lang, unc, vocab, lim.maxFindings)
 
 	total, cancelTotal := context.WithTimeout(ctx, totalDeadline)
 	defer cancelTotal()
@@ -408,7 +421,7 @@ func reviewWith(ctx context.Context, text, lang string, unc []ReviewUncertain, v
 			lastErr = fmt.Errorf("%w (raw: %.300q)", err, raw)
 			continue
 		}
-		return validateFindings(text, raws, unc), model, nil
+		return validateFindings(text, raws, unc, lim), model, nil
 	}
 	return nil, "", lastErr
 }

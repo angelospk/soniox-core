@@ -72,8 +72,8 @@ func cmdWeeklyReview(args []string) {
 	if len(items) > *limit {
 		items = items[:*limit]
 	}
-	path := filepath.Join(reportDir(), time.Now().Format("2006-01-02")+".json")
-	if err := weekly.SaveReport(path, items); err != nil {
+	path, err := weekly.SaveNewReport(reportDir(), time.Now(), items)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "weekly-review:", err)
 		os.Exit(1)
 	}

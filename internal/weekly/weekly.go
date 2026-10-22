@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/angelospk/soniox-core/internal/cleanup"
@@ -78,17 +79,13 @@ func Chunks(texts []string, max int) []string {
 	if len(texts) == 0 || max <= 0 {
 		return nil
 	}
+	var pieces []string
+	for _, t := range texts {
+		pieces = append(pieces, splitText(t, max)...)
+	}
 	var out []string
 	cur := ""
-	for _, t := range texts {
-		if len(t) > max {
-			if cur != "" {
-				out = append(out, cur)
-				cur = ""
-			}
-			out = append(out, truncateRunes(t, max))
-			continue
-		}
+	for _, t := range pieces {
 		if cur == "" {
 			cur = t
 			continue
@@ -106,15 +103,30 @@ func Chunks(texts []string, max int) []string {
 	return out
 }
 
-func truncateRunes(s string, max int) string {
-	if len(s) <= max {
-		return s
+// splitText cuts a text longer than max into pieces of at most max bytes, at the
+// last space before the limit when there is one, else at a rune boundary.
+func splitText(s string, max int) []string {
+	var out []string
+	s = strings.TrimSpace(s)
+	for len(s) > max {
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		if sp := strings.LastIndexFunc(s[:cut], unicode.IsSpace); sp > 0 {
+			cut = sp
+		}
+		if cut == 0 { // a rune wider than max: cannot split, keep it whole
+			_, n := utf8.DecodeRuneInString(s)
+			cut = n
+		}
+		out = append(out, strings.TrimSpace(s[:cut]))
+		s = strings.TrimSpace(s[cut:])
 	}
-	cut := max
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
+	if s != "" {
+		out = append(out, s)
 	}
-	return s[:cut]
+	return out
 }
 
 // ChunkFindings pairs a chunk's text with the findings the review returned
@@ -162,10 +174,20 @@ func Aggregate(in []ChunkFindings) []Item {
 	var items []Item
 	index := make(map[aggregateKey]int)
 	for _, cf := range in {
+		counted := map[aggregateKey]bool{} // a key counts once per chunk
+		lower := strings.ToLower(cf.Text)
 		for _, f := range cf.Findings {
 			key := aggregateKey{kind: f.Kind, from: strings.ToLower(f.From), to: f.To}
+			// Count occurrences in the chunk: the model names a repeated error once.
+			n := 0
+			if !counted[key] {
+				counted[key] = true
+				if n = countWhole(lower, key.from); n < 1 {
+					n = 1
+				}
+			}
 			if i, ok := index[key]; ok {
-				items[i].Count++
+				items[i].Count += n
 				continue
 			}
 			index[key] = len(items)
@@ -173,7 +195,7 @@ func Aggregate(in []ChunkFindings) []Item {
 				Kind:    f.Kind,
 				From:    f.From,
 				To:      f.To,
-				Count:   1,
+				Count:   n,
 				Example: example(cf.Text, f),
 				Why:     f.Why,
 			})
@@ -332,8 +354,97 @@ func appendLines(path, existing string, lines []string) error {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return writeAtomic(path, []byte(b.String()))
 }
+
+// writeAtomic replaces path through a temp file in the same directory and a rename,
+// so a failed write never leaves a half-written rule file.
+func writeAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op after a successful rename
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// countWhole counts from in text. A single word must stand alone ("να" is not
+// counted inside "ναι"); a phrase carries its own boundaries.
+func countWhole(text, from string) int {
+	if from == "" {
+		return 0
+	}
+	if strings.ContainsFunc(from, unicode.IsSpace) {
+		return strings.Count(text, from)
+	}
+	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	n := 0
+	for off := 0; ; {
+		i := strings.Index(text[off:], from)
+		if i < 0 {
+			return n
+		}
+		at := off + i
+		end := at + len(from)
+		before, _ := utf8.DecodeLastRuneInString(text[:at])
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		if (at == 0 || !isWord(before)) && (end == len(text) || !isWord(after)) {
+			n++
+		}
+		off = end
+	}
+}
+
+// SaveNewReport writes items to a new file in dir named after t, never replacing an
+// existing report (a second run in the same second gets a -2, -3, … suffix).
+func SaveNewReport(dir string, t time.Time, items []Item) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	b, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	b = append(b, '\n')
+	base := strings.TrimSuffix(ReportName(t), ".json")
+	for i := 1; i < 100; i++ {
+		name := base + ".json"
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d.json", base, i)
+		}
+		p := filepath.Join(dir, name)
+		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, err = f.Write(b)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		return p, err
+	}
+	return "", fmt.Errorf("weekly: no free report name for %s", base)
+}
+
+// ReportName is a per-run report file name (second resolution): ids chosen from one
+// report can never resolve against a later run's report.
+func ReportName(t time.Time) string { return t.Format("2006-01-02T150405") + ".json" }
 
 // SaveReport writes items as indented JSON to path, creating parent
 // directories as needed.
@@ -348,7 +459,7 @@ func SaveReport(path string, items []Item) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(path, b, 0o600)
+	return writeAtomic(path, b)
 }
 
 // LoadReport reads items from a JSON report written by SaveReport.

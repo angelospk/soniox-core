@@ -14,7 +14,7 @@ func rf(from, to, kind, key string) rawFinding {
 
 func TestValidateFindingsComputesRanges(t *testing.T) {
 	text := "Είπα στον Χάρη Λαμπίδη ότι ναι."
-	got := validateFindings(text, []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil)
+	got := validateFindings(text, []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil, liveLimits)
 	if len(got) != 1 {
 		t.Fatalf("want 1 finding, got %d", len(got))
 	}
@@ -26,7 +26,7 @@ func TestValidateFindingsComputesRanges(t *testing.T) {
 // The model quoting something that isn't in the transcript is the main hallucination
 // mode; it must never reach the UI as a highlight.
 func TestValidateFindingsDropsUnquotedText(t *testing.T) {
-	got := validateFindings("Είπα ναι.", []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil)
+	got := validateFindings("Είπα ναι.", []rawFinding{rf("Λαμπίδη", "Λαμπρίδη", KindMisheard, "")}, nil, liveLimits)
 	if len(got) != 0 {
 		t.Fatalf("want 0, got %+v", got)
 	}
@@ -36,7 +36,7 @@ func TestValidateFindingsDropsUnquotedText(t *testing.T) {
 // highlighting the wrong occurrence.
 func TestValidateFindingsDropsAmbiguousQuote(t *testing.T) {
 	text := "ναι και ναι"
-	if got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "")}, nil, liveLimits); len(got) != 0 {
 		t.Fatalf("want 0 for ambiguous quote, got %+v", got)
 	}
 }
@@ -44,7 +44,7 @@ func TestValidateFindingsDropsAmbiguousQuote(t *testing.T) {
 func TestValidateFindingsUsesKeyToDisambiguate(t *testing.T) {
 	text := "ναι και ναι"
 	unc := []ReviewUncertain{{Key: "w2", Word: "ναι", Start: 14, End: 20}} // the SECOND "ναι" (byte offsets)
-	got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "w2")}, unc)
+	got := validateFindings(text, []rawFinding{rf("ναι", "όχι", KindMisheard, "w2")}, unc, liveLimits)
 	if len(got) != 1 {
 		t.Fatalf("want 1, got %d", len(got))
 	}
@@ -62,11 +62,11 @@ func TestValidateFindingsEnforcesKindToAgreement(t *testing.T) {
 		rf("τέλος πάντων", "x", "bogus", ""),           // unknown kind
 	}
 	for i, c := range cases {
-		if got := validateFindings(text, []rawFinding{c}, nil); len(got) != 0 {
+		if got := validateFindings(text, []rawFinding{c}, nil, liveLimits); len(got) != 0 {
 			t.Fatalf("case %d: want 0, got %+v", i, got)
 		}
 	}
-	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil); len(got) != 1 {
+	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil, liveLimits); len(got) != 1 {
 		t.Fatalf("valid deletion rejected: %+v", got)
 	}
 }
@@ -75,7 +75,7 @@ func TestValidateFindingsEnforcesKindToAgreement(t *testing.T) {
 func TestValidateFindingsRejectsDelimiterBearingReplacement(t *testing.T) {
 	text := "Ναι όχι"
 	for _, bad := range []string{"a\tb", "a\nb", "a\x00b"} {
-		if got := validateFindings(text, []rawFinding{rf("Ναι", bad, KindMisheard, "")}, nil); len(got) != 0 {
+		if got := validateFindings(text, []rawFinding{rf("Ναι", bad, KindMisheard, "")}, nil, liveLimits); len(got) != 0 {
 			t.Fatalf("accepted %q: %+v", bad, got)
 		}
 	}
@@ -83,7 +83,7 @@ func TestValidateFindingsRejectsDelimiterBearingReplacement(t *testing.T) {
 
 func TestValidateFindingsDropsNoOpEdit(t *testing.T) {
 	text := "Ναι όχι"
-	if got := validateFindings(text, []rawFinding{rf("Ναι", "Ναι", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("Ναι", "Ναι", KindMisheard, "")}, nil, liveLimits); len(got) != 0 {
 		t.Fatalf("want 0 for no-op, got %+v", got)
 	}
 }
@@ -95,7 +95,7 @@ func TestValidateFindingsDropsOverlapsAndSortsByPosition(t *testing.T) {
 		rf("gamma", "delta", KindMisheard, ""),
 		rf("beta gamma", "x", KindMisheard, ""),
 		rf("alpha", "A", KindMisheard, ""),
-	}, nil)
+	}, nil, liveLimits)
 	if len(got) != 2 {
 		t.Fatalf("want 2 after overlap drop, got %+v", got)
 	}
@@ -110,7 +110,7 @@ func TestValidateFindingsCapsCount(t *testing.T) {
 	for _, w := range strings.Fields(text) {
 		raws = append(raws, rf(w, "X"+w, KindMisheard, ""))
 	}
-	if got := validateFindings(text, raws, nil); len(got) != maxReviewFindings {
+	if got := validateFindings(text, raws, nil, liveLimits); len(got) != maxReviewFindings {
 		t.Fatalf("want %d, got %d", maxReviewFindings, len(got))
 	}
 }
@@ -198,11 +198,11 @@ func TestClampReviewInput(t *testing.T) {
 // and rewriting it there corrupts an unrelated word.
 func TestValidateFindingsRequiresWholeWordForReplacements(t *testing.T) {
 	text := "Είπα ναι"
-	if got := validateFindings(text, []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil, liveLimits); len(got) != 0 {
 		t.Fatalf("matched inside a longer word: %+v", got)
 	}
 	// The same word standing alone is fine.
-	if got := validateFindings("Είπα να πάμε", []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil); len(got) != 1 {
+	if got := validateFindings("Είπα να πάμε", []rawFinding{rf("να", "δεν", KindMisheard, "")}, nil, liveLimits); len(got) != 1 {
 		t.Fatalf("standalone word rejected: %+v", got)
 	}
 }
@@ -210,7 +210,7 @@ func TestValidateFindingsRequiresWholeWordForReplacements(t *testing.T) {
 // A Greek accent is part of the word, not a boundary.
 func TestWholeWordTreatsCombiningMarksAsWordCharacters(t *testing.T) {
 	text := "Ναι τελος παντωνάκι όχι"
-	if got := validateFindings(text, []rawFinding{rf("παντων", "πάντων", KindMisheard, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("παντων", "πάντων", KindMisheard, "")}, nil, liveLimits); len(got) != 0 {
 		t.Fatalf("matched a prefix of a longer word: %+v", got)
 	}
 }
@@ -218,7 +218,7 @@ func TestWholeWordTreatsCombiningMarksAsWordCharacters(t *testing.T) {
 // A deletion quotes a phrase, which carries its own boundaries — literal matching stays.
 func TestDeletionsKeepLiteralMatching(t *testing.T) {
 	text := "Ναι, τέλος πάντων, όχι."
-	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil); len(got) != 1 {
+	if got := validateFindings(text, []rawFinding{rf("τέλος πάντων", "", KindRedundant, "")}, nil, liveLimits); len(got) != 1 {
 		t.Fatalf("phrase deletion rejected: %+v", got)
 	}
 }
@@ -226,7 +226,7 @@ func TestDeletionsKeepLiteralMatching(t *testing.T) {
 // `from` becomes a corrections.tsv key, so it obeys the same delimiter rules as `to`.
 func TestValidateFindingsRejectsDelimiterBearingFrom(t *testing.T) {
 	text := "a\tb"
-	if got := validateFindings(text, []rawFinding{rf("a\tb", "", KindRedundant, "")}, nil); len(got) != 0 {
+	if got := validateFindings(text, []rawFinding{rf("a\tb", "", KindRedundant, "")}, nil, liveLimits); len(got) != 0 {
 		t.Fatalf("accepted a tab-bearing from: %+v", got)
 	}
 }
@@ -245,5 +245,22 @@ func TestReviewBatchUsesLongDeadline(t *testing.T) {
 	}
 	if left < 30*time.Second {
 		t.Fatalf("attempt deadline %v, want >= 30s", left)
+	}
+}
+
+// A weekly batch repeats the same mishearing across dictations; the live path drops
+// an ambiguous (repeated) phrase, the batch path must keep it.
+func TestReviewBatchKeepsRepeatedPhrase(t *testing.T) {
+	caller := func(context.Context, string, string) (string, error) {
+		return `{"findings":[{"from":"Πορταρά","to":"Πρωταρά","kind":"misheard"}]}`, nil
+	}
+	text := "πάμε Πορταρά.\n\nστον Πορταρά ξανά"
+	got, _, err := ReviewBatch(context.Background(), "k", text, "el", nil, []string{"m"}, caller)
+	if err != nil || len(got) != 1 || got[0].From != "Πορταρά" {
+		t.Fatalf("got %+v err=%v", got, err)
+	}
+	live, _, _ := Review(context.Background(), "k", text, "el", nil, nil, []string{"m"}, caller)
+	if len(live) != 0 {
+		t.Fatalf("live path must still drop the ambiguous phrase, got %+v", live)
 	}
 }
