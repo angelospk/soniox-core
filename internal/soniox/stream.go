@@ -136,7 +136,7 @@ func runSession(ctx context.Context, opt Options, mu *sync.Mutex, asm *Assembler
 	})
 
 	if err := client.Start(ctx, sdk.SessionOptions{
-		Model:                    sdk.DefaultModel,
+		Model:                    Model,
 		AudioFormat:              AudioFormat,
 		SampleRate:               SampleRate,
 		NumChannels:              NumChannels,

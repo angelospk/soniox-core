@@ -16,6 +16,8 @@ const (
 	SampleRate  = 24000
 	NumChannels = 1
 	AudioFormat = "pcm_s16le"
+	// Model is pinned (not sdk.DefaultModel, which still names the retired v4).
+	Model = "stt-rt-v5"
 )
 
 // ChunkBytes is the byte size of a ms-millisecond PCM s16le mono chunk.

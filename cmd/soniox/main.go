@@ -37,8 +37,6 @@ func loadEnv() {
 	_ = config.LoadDotEnv(".env")
 	if home, err := os.UserHomeDir(); err == nil {
 		_ = config.LoadDotEnv(filepath.Join(home, ".soniox-core", ".env"))
-		// reuse keys already configured for the Python tool
-		_ = config.LoadDotEnv(filepath.Join(home, "projects", "soniox-dictate", ".env"))
 	}
 }
 

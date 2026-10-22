@@ -194,6 +194,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(conn, &writeMu, map[string]any{
 		"type": "done", "text": cleaned, "raw": full,
 		"profile": meta.Profile, "lang": meta.Lang, "model": meta.Model, "adhoc": meta.Adhoc,
+		"send": meta.Send,
 		"cleanup": map[string]any{
 			"outcome": string(meta.Outcome), "reason": meta.Reason, "elapsedMs": meta.ElapsedMs,
 		},
@@ -449,8 +450,8 @@ func (s *Server) cleanLive(ctx context.Context, conn *websocket.Conn, mu *sync.M
 // profile/command resolution cleanLive uses — so the literal keyword never lands in
 // the output. Returns the full (uncleaned) transcript minus the command, marked Skipped.
 func (s *Server) skipClean(full string) (string, cleanupMeta) {
-	text, name, adHoc, lang := s.resolveLiveCommand(full, true)
-	return text, cleanupMeta{Profile: name, Lang: lang, Outcome: cleanup.Skipped, Adhoc: adHoc != ""}
+	text, name, adHoc, lang, send := s.resolveLiveCommand(full, true)
+	return text, cleanupMeta{Profile: name, Lang: lang, Outcome: cleanup.Skipped, Adhoc: adHoc != "", Send: send}
 }
 
 func (s *Server) cleanupWillRun(text string) bool {
@@ -479,13 +480,15 @@ func (s *Server) cleanText(ctx context.Context, full string, allowVoiceCommand b
 		return full, cleanupMeta{Profile: "default", Outcome: cleanup.FallbackDisabled}
 	}
 
-	text, name, adHoc, lang := s.resolveLiveCommand(full, allowVoiceCommand)
+	text, name, adHoc, lang, send := s.resolveLiveCommand(full, allowVoiceCommand)
 	// Honor the no-ai-cleanup preference on the AUTOMATIC path only (explicit /clean
 	// ignores it — see cleanExplicit). Keeps the spoken-command strip + returns raw.
 	if s.PrefsDir != "" && fileExists(filepath.Join(s.PrefsDir, "no-ai-cleanup")) {
-		return text, cleanupMeta{Profile: name, Lang: lang, Outcome: cleanup.FallbackDisabled, Adhoc: adHoc != ""}
+		return text, cleanupMeta{Profile: name, Lang: lang, Outcome: cleanup.FallbackDisabled, Adhoc: adHoc != "", Send: send}
 	}
-	return s.cleanExplicit(ctx, text, name, adHoc, lang)
+	out, meta := s.cleanExplicit(ctx, text, name, adHoc, lang)
+	meta.Send = send
+	return out, meta
 }
 
 // resolveLiveCommand loads the active profile, trigger keyword, and output language
@@ -494,9 +497,9 @@ func (s *Server) cleanText(ctx context.Context, full string, allowVoiceCommand b
 // Shared by the auto-clean path (cleanText) and the panel-mode skip path (skipClean)
 // so the command is stripped identically whether or not Gemini cleanup runs. With no
 // PrefsDir (legacy/tests) it returns the text unchanged under the "default" profile.
-func (s *Server) resolveLiveCommand(full string, allowVoiceCommand bool) (text, name, adHoc, lang string) {
+func (s *Server) resolveLiveCommand(full string, allowVoiceCommand bool) (text, name, adHoc, lang string, send bool) {
 	if s.PrefsDir == "" {
-		return full, "default", "", ""
+		return full, "default", "", "", false
 	}
 	profiles, _ := cleanup.LoadProfiles(filepath.Join(s.PrefsDir, "prompts"))
 	keyword := readTrimmed(filepath.Join(s.PrefsDir, "trigger-keyword"))
@@ -508,15 +511,15 @@ func (s *Server) resolveLiveCommand(full string, allowVoiceCommand bool) (text, 
 
 	text, name = full, active
 	if allowVoiceCommand {
-		if prof, ad, stripped, ok := cleanup.ParseCommand(full, keyword, profiles); ok {
+		if prof, ad, stripped, ok, snd := cleanup.ParseCommandSend(full, keyword, profiles); ok {
 			if prof != "" {
 				name = prof
 			}
-			text, adHoc = stripped, ad
+			text, adHoc, send = stripped, ad, snd
 		}
 	}
 	lang = readTrimmed(filepath.Join(s.PrefsDir, "output-language"))
-	return text, name, adHoc, lang
+	return text, name, adHoc, lang, send
 }
 
 // cleanExplicit runs cleanup with an already-resolved profile name + optional ad-hoc
@@ -575,6 +578,7 @@ type cleanupMeta struct {
 	Reason    string
 	ElapsedMs int64
 	Adhoc     bool
+	Send      bool // spoken "εντολή στείλε": client presses Return after pasting
 }
 
 // logCleanup writes one structured line per cleanup. Reason is already a sanitized

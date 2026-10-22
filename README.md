@@ -5,7 +5,7 @@ the [soniox-dictate](https://github.com/angelospk/soniox-dictate) tool, rebuilt 
 be performant, dependency-light, and runnable **as a server**.
 
 Built on the [moxierobots/soniox-stt-go](https://github.com/moxierobots/soniox-stt-go)
-SDK (real-time `stt-rt-v4` over WebSocket) — we don't reimplement the protocol.
+SDK (real-time `stt-rt-v5` over WebSocket) — we don't reimplement the protocol.
 
 ## Where this sits (three repos)
 

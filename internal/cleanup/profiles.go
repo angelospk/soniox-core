@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -94,8 +95,17 @@ var greekFold = strings.NewReplacer(
 )
 
 // foldGreek lowercases and strips Greek diacritics for case/accent-insensitive
-// comparison of single words.
-func foldGreek(s string) string { return greekFold.Replace(strings.ToLower(s)) }
+// comparison of single words. Combining marks are dropped too, so decomposed (NFD)
+// accents fold the same as precomposed ones.
+func foldGreek(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, s)
+	return greekFold.Replace(strings.ToLower(s))
+}
 
 // trailCut is trimmed from the end of an utterance (and tokens) before matching.
 const trailCut = " \t\r\n.,!;:·…?·"
@@ -235,7 +245,7 @@ func ParseCommand(raw, keyword string, profiles map[string]Profile) (profile, ad
 	var toks []tok
 	inTok, s := false, 0
 	for i, r := range raw {
-		sep := r == ' ' || r == '\t' || r == '\r' || r == '\n'
+		sep := unicode.IsSpace(r) // incl. no-break space, which Soniox may emit
 		if sep {
 			if inTok {
 				toks = append(toks, tok{raw[s:i], s, i})
@@ -314,4 +324,50 @@ func resolveMode(mode string, profiles map[string]Profile) string {
 		}
 	}
 	return ""
+}
+
+// SendWord, spoken as the LAST word of a voice command ("…, εντολή στείλε"), asks the
+// client to press Return after pasting, so a chat message is sent hands-free. It can
+// follow a profile or ad-hoc command ("εντολή μήνυμα στείλε"). A bare "<keyword>
+// στείλε" needs no pause before the keyword: the two-word phrase is the safeguard.
+const SendWord = "στείλε"
+
+// ParseCommandSend is ParseCommand plus the trailing SendWord. send reports whether
+// the command ended in SendWord; the word is stripped along with the command. A
+// trailing "στείλε" with no command keyword before it is ordinary speech.
+func ParseCommandSend(raw, keyword string, profiles map[string]Profile) (profile, adHoc, stripped string, found, send bool) {
+	if strings.TrimSpace(keyword) == "" {
+		keyword = DefaultKeyword
+	}
+	if rest, ok := cutLastWord(raw, SendWord); ok {
+		if pre, ok := cutLastWord(rest, keyword); ok {
+			return "", "", strings.TrimRightFunc(pre, isCut), true, true
+		}
+		if p, a, s, ok := ParseCommand(rest, keyword, profiles); ok {
+			return p, a, s, true, true
+		}
+	}
+	profile, adHoc, stripped, found = ParseCommand(raw, keyword, profiles)
+	return profile, adHoc, stripped, found, false
+}
+
+// cutLastWord reports whether the last whitespace-separated token of s equals word
+// (accent/case-insensitive, surrounding punctuation ignored) and returns s before it.
+// Any Unicode space separates tokens (Soniox may emit a no-break space).
+func cutLastWord(s, word string) (string, bool) {
+	t := strings.TrimRightFunc(s, isCut)
+	i := 0 // start of the last token: just past the last space rune (1-3 bytes)
+	if j := strings.LastIndexFunc(t, unicode.IsSpace); j >= 0 {
+		_, n := utf8.DecodeRuneInString(t[j:])
+		i = j + n
+	}
+	if t[i:] == "" || foldGreek(strings.TrimFunc(t[i:], isCut)) != foldGreek(word) {
+		return s, false
+	}
+	return t[:i], true
+}
+
+// isCut is trailCut plus any Unicode space and the Greek question mark (U+037E).
+func isCut(r rune) bool {
+	return unicode.IsSpace(r) || r == '\u037e' || strings.ContainsRune(trailCut, r)
 }
