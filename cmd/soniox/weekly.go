@@ -19,10 +19,20 @@ import (
 // reportDir holds one JSON report per weekly review run.
 func reportDir() string { return filepath.Join(prefsDir(), "weekly-review") }
 
+// requirePrefs stops a weekly command when the home dir is unknown: every path it
+// touches lives under ~/.soniox-dictate, and "" would turn them into relative paths.
+func requirePrefs(cmd string) {
+	if prefsDir() == "" {
+		fmt.Fprintln(os.Stderr, cmd+": cannot resolve the home directory")
+		os.Exit(1)
+	}
+}
+
 // cmdWeeklyReview proof-reads the last N days of dictations in chunks, ranks the
 // recurring findings, drops ones that already have a rule, saves the report, and
 // prints it as a markdown table for a person to pick from.
 func cmdWeeklyReview(args []string) {
+	requirePrefs("weekly-review")
 	fs := flag.NewFlagSet("weekly-review", flag.ExitOnError)
 	days := fs.Int("days", 7, "how many days of dictations to review")
 	sessions := fs.String("sessions", filepath.Join(prefsDir(), "dictations", "sessions.jsonl"), "sessions.jsonl")
@@ -85,6 +95,7 @@ func cmdWeeklyReview(args []string) {
 // cmdApplyReview writes the chosen report items to corrections.tsv (and, with
 // -vocab, their replacement terms to vocabulary.txt).
 func cmdApplyReview(args []string) {
+	requirePrefs("apply-review")
 	fs := flag.NewFlagSet("apply-review", flag.ExitOnError)
 	report := fs.String("report", "", "report JSON (default: the newest in ~/.soniox-dictate/weekly-review)")
 	ids := fs.String("ids", "", "comma-separated item ids to add as correction rules")
