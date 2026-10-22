@@ -27,6 +27,7 @@ func cmdWeeklyReview(args []string) {
 	days := fs.Int("days", 7, "how many days of dictations to review")
 	sessions := fs.String("sessions", filepath.Join(prefsDir(), "dictations", "sessions.jsonl"), "sessions.jsonl")
 	limit := fs.Int("limit", 30, "max items to report (most frequent first)")
+	modelList := fs.String("models", "", "comma-separated model chain (default: ~/.soniox-dictate/cleanup-models)")
 	_ = fs.Parse(args)
 
 	key := config.GeminiKey()
@@ -40,13 +41,26 @@ func cmdWeeklyReview(args []string) {
 		os.Exit(1)
 	}
 	vocab := splitLines(readVocab())
-	models := cleanup.ReadModelChain(filepath.Join(prefsDir(), "cleanup-models"))
+	models := splitComma(*modelList)
+	if len(models) == 0 {
+		models = cleanup.ReadModelChain(filepath.Join(prefsDir(), "cleanup-models"))
+	}
 	// 12 KB: big enough to batch many short dictations, small enough that a
 	// flash-lite model answers well inside the batch deadline.
 	chunks := weekly.Chunks(texts, 12<<10)
-	failed := 0
+	failed, calls := 0, 0
+	// Free-tier quotas are per minute: pace the calls, and retry a failed chunk
+	// once after the window has moved on.
 	review := func(ctx context.Context, text string) ([]cleanup.Finding, error) {
+		if calls > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		calls++
 		f, _, err := cleanup.ReviewBatch(ctx, key, text, "", vocab, models, nil)
+		if err != nil {
+			time.Sleep(30 * time.Second)
+			f, _, err = cleanup.ReviewBatch(ctx, key, text, "", vocab, models, nil)
+		}
 		if err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "weekly-review: chunk failed: %v\n", err)
