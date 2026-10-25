@@ -126,26 +126,14 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	var writeMu sync.Mutex
 	audio := make(chan []byte, 64)
 
+	// stop releases the reader once this handler returns: after Stream gives up
+	// (maxReconnects) nobody drains audio, and a blocked send would leak the reader.
+	// Deferred after conn.Close, so it runs first.
+	stop := make(chan struct{})
+	defer close(stop)
+
 	// reader: pump client frames into the audio channel
-	go func() {
-		defer close(audio)
-		for {
-			mt, data, err := conn.ReadMessage()
-			if err != nil {
-				st.clientGone(err)
-				return
-			}
-			switch mt {
-			case websocket.BinaryMessage:
-				st.addAudio(data)
-				audio <- data
-			case websocket.TextMessage:
-				if string(data) == "done" {
-					return
-				}
-			}
-		}
-	}()
+	go pumpAudio(conn.ReadMessage, audio, stop, st.addAudio, st.clientGone)
 
 	langs := s.Langs
 	if q := r.URL.Query()["lang"]; len(q) > 0 {
@@ -211,6 +199,34 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			"outcome": string(meta.Outcome), "reason": meta.Reason, "elapsedMs": meta.ElapsedMs,
 		},
 	})
+}
+
+// pumpAudio forwards binary client frames to audio until the client sends "done",
+// the read fails, or stop closes (the handler is gone and nobody reads audio). It
+// closes audio on exit.
+func pumpAudio(next func() (int, []byte, error), audio chan<- []byte, stop <-chan struct{},
+	onAudio func([]byte), onGone func(error)) {
+	defer close(audio)
+	for {
+		mt, data, err := next()
+		if err != nil {
+			onGone(err)
+			return
+		}
+		switch mt {
+		case websocket.BinaryMessage:
+			onAudio(data)
+			select {
+			case audio <- data:
+			case <-stop:
+				return
+			}
+		case websocket.TextMessage:
+			if string(data) == "done" {
+				return
+			}
+		}
+	}
 }
 
 // handleTranscribe: POST multipart "file" -> JSON {raw, cleaned, ...}.
